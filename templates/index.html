@@ -73,7 +73,7 @@
             <p><strong>Drag & drop</strong> an image here or
               <label for="file" style="text-decoration:underline;cursor:pointer;color:var(--accent)">browse</label>.
             </p>
-            <p class="muted">Tip: tick “Annotated image” to draw detections in your browser; otherwise raw JSON is shown.</p>
+            <p class="muted">Tip: tick “Annotated image” to draw detections; otherwise raw JSON is shown.</p>
 
             <div class="controls">
               <label class="chk"><input type="checkbox" name="single"> Single object</label>
@@ -136,17 +136,31 @@ form.addEventListener('submit', async (e) => {
   const f = fileInput.files[0];
   if(!f){ setResult('<span class="muted">Please select an image.</span>'); return; }
 
-  const fd = new FormData(form); // includes "single" if checked
+  const fd = new FormData(); // only send the file + any needed flags
+  fd.append('file', f);
 
   try{
     const res = await fetch('/predict', { method:'POST', body: fd });
-    // ensure JSON even on error
     let data;
     try { data = await res.json(); } catch { throw new Error('Server returned non-JSON'); }
-    if(!res.ok) throw new Error(data.error || 'Server error');
+    if(!res.ok) throw new Error(data.message || data.error || 'Server error');
 
+    // If checkbox checked, prefer server-rendered annotation for perfect alignment
+    if(annotateCb.checked && (data.annotated_image || data.annotated_image_url)){
+      const src = data.annotated_image ? data.annotated_image : data.annotated_image_url;
+      const detCount = (data.detections || []).length;
+      setResult(`
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <img src="${src}" alt="annotated" style="max-width:700px;width:100%;border-radius:10px;border:1px solid #223"/>
+          <div class="muted">Detections: <strong>${detCount}</strong></div>
+        </div>
+      `);
+      return;
+    }
+
+    // Otherwise, draw client-side using returned boxes (key = "box"), scaled from API image_size
     if(annotateCb.checked){
-      drawAnnotated(f, data);
+      await drawAnnotatedFromBoxes(f, data);
     }else{
       const pretty = escapeHtml(JSON.stringify(data, null, 2));
       setResult('<code>'+ pretty +'</code>');
@@ -156,58 +170,66 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
-// draw result in high-DPI canvas with high-contrast labels
-function drawAnnotated(file, data){
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    // choose display size (keeps UI tidy)
-    const maxW = 700;
-    const dispW = Math.min(img.naturalWidth, maxW);
-    const dispH = img.naturalHeight * (dispW / img.naturalWidth);
+// draw using API boxes (data.detections[].box) and API image_size as the coordinate space
+async function drawAnnotatedFromBoxes(file, data){
+  const img = await blobToImage(file);
 
-    // high-DPI canvas
-    const dpr = window.devicePixelRatio || 1;
-    setResult('<canvas id="canvas" style="width:'+dispW+'px;height:'+dispH+'px;border-radius:10px;border:1px solid #223"></canvas>');
-    const canvas = document.getElementById('canvas');
-    canvas.width  = Math.round(dpr * dispW);
-    canvas.height = Math.round(dpr * dispH);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+  // Use model's image_size as the “source” coordinate space
+  const inferW = (data.image_size && data.image_size.w) ? data.image_size.w : img.naturalWidth;
+  const inferH = (data.image_size && data.image_size.h) ? data.image_size.h : img.naturalHeight;
 
-    // draw base image
-    ctx.drawImage(img, 0, 0, dispW, dispH);
+  // Choose display size based on inference size (keeps alignment exact)
+  const maxW = 700;
+  const dispW = Math.min(inferW, maxW);
+  const dispH = inferH * (dispW / inferW);
 
-    // scaling from natural -> display coords
-    const sx = dispW / img.naturalWidth;
-    const sy = dispH / img.naturalHeight;
+  // high-DPI canvas
+  const dpr = window.devicePixelRatio || 1;
+  setResult('<canvas id="canvas" style="width:'+dispW+'px;height:'+dispH+'px;border-radius:10px;border:1px solid #223"></canvas>');
+  const canvas = document.getElementById('canvas');
+  canvas.width  = Math.round(dpr * dispW);
+  canvas.height = Math.round(dpr * dispH);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
 
-    (data.detections || []).forEach(d => {
-      let [x1,y1,x2,y2] = d.bbox;
-      x1*=sx; y1*=sy; x2*=sx; y2*=sy;
+  // draw the uploaded image scaled to match the display size
+  ctx.drawImage(img, 0, 0, dispW, dispH);
 
-      // thicker lines
-      ctx.strokeStyle = '#22d3ee';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+  // scale from API coords -> display coords
+  const sx = dispW / inferW;
+  const sy = dispH / inferH;
 
-      // dark label bg + white text for readability
-      const label = `${d.class_name} ${Number(d.confidence).toFixed(2)}`;
-      ctx.font = 'bold 18px Inter, Arial';
-      const tw = ctx.measureText(label).width + 12, th = 24;
-      const ly = Math.max(0, y1 - th);
+  (data.detections || []).forEach(d => {
+    // FIX 1: use "box" (not "bbox")
+    let [x1,y1,x2,y2] = d.box; 
+    x1*=sx; y1*=sy; x2*=sx; y2*=sy;
 
-      ctx.fillStyle = 'rgba(17,24,39,.92)'; // near-black
-      ctx.fillRect(x1, ly, tw, th);
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x1, y1, x2-x1, y2-y1);
 
-      ctx.fillStyle = '#ffffff';
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillText(label, x1 + 6, ly + th - 6);
-    });
+    const label = `${d.class_name} ${Number(d.confidence).toFixed(2)}`;
+    ctx.font = 'bold 18px Inter, Arial';
+    const tw = ctx.measureText(label).width + 12, th = 24;
+    const ly = Math.max(0, y1 - th);
 
-    URL.revokeObjectURL(url);
-  };
-  img.src = url;
+    ctx.fillStyle = 'rgba(17,24,39,.92)';
+    ctx.fillRect(x1, ly, tw, th);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(label, x1 + 6, ly + th - 6);
+  });
+}
+
+function blobToImage(file){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = reject;
+    img.src = url;
+  });
 }
 </script>
 </body>
