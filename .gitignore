@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.dll
+*.so
+
+# Virtual environments
+venv/
+.venv/
+
+# Torch / TensorFlow large model files
+*.pt
+*.pth
+*.onnx
+*.h5
+
+# Jupyter
+.ipynb_checkpoints/
+# Logs and system files
+*.log
+.DS_Store
+venv/`n.venv/`n__pycache__/`n*.pyc`n*.dll`n*.so
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.dll
+*.so

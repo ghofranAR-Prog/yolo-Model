@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>YOLOv8 – Screwdriver vs Paintbrush</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root{
+      --bg:#0f172a; --card:#111827; --panel:#0b1020; --border:#1f2937;
+      --text:#e5e7eb; --muted:#94a3b8; --accent:#22d3ee; --accent2:#a78bfa;
+      --ok:#10b981; --warn:#f59e0b; --err:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; color:var(--text);
+      background: radial-gradient(1200px 800px at 20% -10%, #1e293b, transparent),
+                  radial-gradient(1000px 600px at 100% 0%, #1f2937, transparent),
+                  var(--bg);
+      font:16px/1.5 Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      min-height:100dvh; display:grid; place-items:center; padding:24px;
+    }
+    .wrap{ width:min(980px,100%); }
+    .title{ font-weight:800; font-size:clamp(22px,4.5vw,36px); margin:0 0 16px; }
+    .card{
+      background:linear-gradient(180deg,#0b1020,var(--card));
+      border:1px solid var(--border); border-radius:18px; padding:22px;
+      box-shadow:0 20px 60px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
+    }
+    .grid{ display:grid; gap:18px; grid-template-columns:1.2fr .9fr; }
+    @media (max-width:880px){ .grid{ grid-template-columns:1fr; } }
+
+    .drop{
+      border:2px dashed #334155; border-radius:16px; padding:18px;
+      transition:.2s border-color,.2s background;
+    }
+    .drop.drag{ border-color:var(--accent); background:rgba(34,211,238,.06); }
+    .muted{ color:var(--muted); font-size:14px }
+    .controls{ display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin:12px 0 }
+    .chk{ display:flex; align-items:center; gap:8px; font-size:14px; color:#cbd5e1 }
+
+    .btn{
+      appearance:none; border:0; cursor:pointer;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      color:#0b1020; font-weight:700; padding:10px 16px; border-radius:12px;
+      transition:.15s transform,.15s filter;
+    }
+    .btn:hover{ filter:brightness(1.08); transform:translateY(-1px) }
+
+    .panel{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px; min-height:120px; }
+    .preview{ width:100%; border-radius:12px; display:none; margin-top:10px; border:1px solid #223; }
+    code{ white-space:pre-wrap; word-break:break-word; font-family:ui-monospace, Menlo, Consolas, monospace; }
+
+    .tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; font-size:12px; margin-left:6px }
+    .ok{ background:rgba(16,185,129,.15); color:#34d399; }
+    .warn{ background:rgba(245,158,11,.15); color:#fbbf24; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 class="title">YOLOv8 – Screwdriver vs Paintbrush</h1>
+
+    <div class="card">
+      <div class="grid">
+        <!-- LEFT: upload -->
+        <div>
+          <form id="form" class="drop" enctype="multipart/form-data">
+            <input id="file" name="file" type="file" accept="image/*" hidden />
+            <p><strong>Drag & drop</strong> an image here or
+              <label for="file" style="text-decoration:underline;cursor:pointer;color:var(--accent)">browse</label>.
+            </p>
+            <p class="muted">Tip: tick “Annotated image” to draw detections in your browser; otherwise raw JSON is shown.</p>
+
+            <div class="controls">
+              <label class="chk"><input type="checkbox" name="single"> Single object</label>
+              <label class="chk"><input type="checkbox" id="annotate"> Annotated image</label>
+              <button class="btn" type="submit">Predict</button>
+            </div>
+
+            <img id="preview" class="preview" alt="preview"/>
+          </form>
+        </div>
+
+        <!-- RIGHT: results -->
+        <div>
+          <div class="panel" id="result"><div class="muted">Result will appear here…</div></div>
+          <div style="margin-top:10px" class="muted">
+            Health: <span id="health" class="tag warn">checking…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const form = document.getElementById('form');
+const fileInput = document.getElementById('file');
+const resultEl = document.getElementById('result');
+const preview = document.getElementById('preview');
+const annotateCb = document.getElementById('annotate');
+const drop = form;
+
+function setResult(html){ resultEl.innerHTML = html; }
+function escapeHtml(s){ return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+// drag & drop styling
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
+drop.addEventListener('drop', e => { fileInput.files = e.dataTransfer.files; showPreview(); });
+
+// preview selected file
+fileInput.addEventListener('change', showPreview);
+function showPreview(){
+  const f = fileInput.files[0];
+  if(!f){ preview.style.display='none'; return; }
+  const reader = new FileReader();
+  reader.onload = e => { preview.src = e.target.result; preview.style.display='block'; };
+  reader.readAsDataURL(f);
+}
+
+// health check
+fetch('/health').then(r=>r.json()).then(_=>{
+  const tag = document.getElementById('health');
+  tag.textContent = 'ok'; tag.className = 'tag ok';
+}).catch(()=>{
+  const tag = document.getElementById('health');
+  tag.textContent = 'warn'; tag.className = 'tag warn';
+});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = fileInput.files[0];
+  if(!f){ setResult('<span class="muted">Please select an image.</span>'); return; }
+
+  const fd = new FormData(form); // includes "single" if checked
+
+  try{
+    const res = await fetch('/predict', { method:'POST', body: fd });
+    // ensure JSON even on error
+    let data;
+    try { data = await res.json(); } catch { throw new Error('Server returned non-JSON'); }
+    if(!res.ok) throw new Error(data.error || 'Server error');
+
+    if(annotateCb.checked){
+      drawAnnotated(f, data);
+    }else{
+      const pretty = escapeHtml(JSON.stringify(data, null, 2));
+      setResult('<code>'+ pretty +'</code>');
+    }
+  }catch(err){
+    setResult('<span style="color:var(--err)">Error: '+ escapeHtml(String(err)) +'</span>');
+  }
+});
+
+// draw result in high-DPI canvas with high-contrast labels
+function drawAnnotated(file, data){
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    // choose display size (keeps UI tidy)
+    const maxW = 700;
+    const dispW = Math.min(img.naturalWidth, maxW);
+    const dispH = img.naturalHeight * (dispW / img.naturalWidth);
+
+    // high-DPI canvas
+    const dpr = window.devicePixelRatio || 1;
+    setResult('<canvas id="canvas" style="width:'+dispW+'px;height:'+dispH+'px;border-radius:10px;border:1px solid #223"></canvas>');
+    const canvas = document.getElementById('canvas');
+    canvas.width  = Math.round(dpr * dispW);
+    canvas.height = Math.round(dpr * dispH);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // draw base image
+    ctx.drawImage(img, 0, 0, dispW, dispH);
+
+    // scaling from natural -> display coords
+    const sx = dispW / img.naturalWidth;
+    const sy = dispH / img.naturalHeight;
+
+    (data.detections || []).forEach(d => {
+      let [x1,y1,x2,y2] = d.bbox;
+      x1*=sx; y1*=sy; x2*=sx; y2*=sy;
+
+      // thicker lines
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+
+      // dark label bg + white text for readability
+      const label = `${d.class_name} ${Number(d.confidence).toFixed(2)}`;
+      ctx.font = 'bold 18px Inter, Arial';
+      const tw = ctx.measureText(label).width + 12, th = 24;
+      const ly = Math.max(0, y1 - th);
+
+      ctx.fillStyle = 'rgba(17,24,39,.92)'; // near-black
+      ctx.fillRect(x1, ly, tw, th);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(label, x1 + 6, ly + th - 6);
+    });
+
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+</script>
+</body>
+</html>
