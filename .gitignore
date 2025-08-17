@@ -10,7 +10,6 @@ venv/
 .venv/
 
 # Torch / TensorFlow large model files
-*.pt
 *.pth
 *.onnx
 *.h5
