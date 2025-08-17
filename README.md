@@ -76,23 +76,23 @@ yolo-Model/
 ## Running the Application
 
 ### Local (without Docker)
-# 1) Create and activate a virtual environment
+### 1) Create and activate a virtual environment
 python -m venv .venv
-# Windows:
+#### Windows:
 .venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
+#### macOS/Linux:
+### source .venv/bin/activate
 
-# 2) Install dependencies
+### 2) Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 3) (Optional) Put your model at weights/best.pt
-#    Otherwise the app falls back to yolov8n.pt
+### 3) (Optional) Put your model at weights/best.pt
+####    Otherwise the app falls back to yolov8n.pt
 
-# 4) Run
+### 4) Run
 python app.py
-# Open http://localhost:7860
+### Open http://localhost:7860
 
 
 ### With Docker:
