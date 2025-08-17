@@ -76,36 +76,38 @@ yolo-Model/
 ## Running the Application
 
 ### Local (without Docker)
-### 1) Create and activate a virtual environment
+
+#### 1) Create and activate a virtual environment
 python -m venv .venv
 #### Windows:
 .venv\Scripts\activate
 #### macOS/Linux:
-### source .venv/bin/activate
+source .venv/bin/activate
 
 ### 2) Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
 
 ### 3) (Optional) Put your model at weights/best.pt
-####    Otherwise the app falls back to yolov8n.pt
+    Otherwise the app falls back to yolov8n.pt
 
-### 4) Run
+#### 4) Run
 python app.py
-### Open http://localhost:7860
+#### Open http://localhost:7860
 
 
 ### With Docker:
 
-# Build the image
+#### Build the image
 docker build -t yolo-flask:latest .
 
-# Run the container
+### Run the container
 docker run --rm -p 7860:7860 \
   -e PORT=7860 \
   -e MODEL_PATH="weights/best.pt" \
   yolo-flask:latest
-# Open http://localhost:7860
+  
+### Open http://localhost:7860
 
 ### If you want to use a host model file, mount it:
 docker run --rm -p 7860:7860 -e PORT=7860 \
@@ -142,7 +144,7 @@ These can be set in Render, Docker, or your shell:
 
 * The right panel shows either a JSON result or an annotated image (and a JSON snippet in the Network tab).
 
-###HTTP API
+### HTTP API
 {
   "status": "ok",
   "weights_in_use": "weights/best.pt",
@@ -161,7 +163,7 @@ These can be set in Render, Docker, or your shell:
 * inline=0|1 (default 1): include Base64 (annotated_image) for backward compatibility
 
 * URL is also returned at annotated_image_url (small response).
-* 
+ 
 * curl -X POST "http://localhost:7860/predict?annotate=1&inline=1" \
   -F "file=@sample.jpg"
 
@@ -201,7 +203,7 @@ These can be set in Render, Docker, or your shell:
 
 * If builds act weird: Manual Deploy → Clear build cache & deploy.
 
-  #### License & credits
+### License & credits
 
 * Built with Flask and Ultralytics YOLOv8.
 
