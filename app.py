@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Union
 from flask import Flask, request, jsonify, render_template
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge, HTTPException
 import torch
 
 # ---------- Low-RAM settings ----------
@@ -25,9 +26,11 @@ MAX_ANN  = int(os.environ.get("MAX_ANN", 512))      # annotated image max side
 LOCAL_WEIGHTS = os.environ.get("MODEL_PATH", "weights/best.pt")
 LOCAL_CLASSES = os.environ.get("CLASSES_FILE", "weights/classes.txt")
 
+# Upload cap (MB). 413 happens before route code; keep this high enough.
+UPLOAD_MAX_MB = int(os.environ.get("UPLOAD_MAX_MB", "10"))
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
-# Limit upload size; raise if you need bigger (or comment this line)
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 MB
+app.config["MAX_CONTENT_LENGTH"] = UPLOAD_MAX_MB * 1024 * 1024  # e.g., 10 MB
 
 # Globals
 MODEL: Optional["YOLO"] = None
@@ -36,6 +39,22 @@ MODEL_LOAD_ERROR: Optional[str] = None
 WEIGHTS_IN_USE: Optional[str] = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# ---------- Error handlers (return JSON, not HTML) ----------
+@app.errorhandler(RequestEntityTooLarge)
+def handle_413(e):
+    return jsonify({"status": "error", "code": 413,
+                    "message": f"File too large. Max {UPLOAD_MAX_MB} MB."}), 413
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(e: HTTPException):
+    # Any other HTTP error (404, 405, etc.)
+    return jsonify({"status": "error", "code": e.code or 500, "message": e.description}), e.code or 500
+
+@app.errorhandler(Exception)
+def handle_500(e):
+    logging.exception("Unhandled error")
+    return jsonify({"status": "error", "code": 500, "message": str(e)}), 500
 
 
 # ---------- Helpers ----------
@@ -71,7 +90,6 @@ def _load_model_once() -> None:
             m = YOLO(w)
             m.to(DEVICE)
 
-            # class names from weights, with optional override from file
             names = getattr(m, "names", None)
             if isinstance(names, dict):
                 max_idx = max(names.keys()) if names else -1
@@ -103,7 +121,6 @@ _load_model_once()
 
 
 def _text_size(draw: ImageDraw.ImageDraw, text: str, font: Optional[ImageFont.ImageFont]) -> tuple[int, int]:
-    """Pillow-safe text size across versions (textbbox preferred)."""
     try:
         box = draw.textbbox((0, 0), text, font=font)  # (l, t, r, b)
         return (box[2] - box[0], box[3] - box[1])
@@ -112,7 +129,6 @@ def _text_size(draw: ImageDraw.ImageDraw, text: str, font: Optional[ImageFont.Im
 
 
 def _draw_annotations(pil_img: Image.Image, dets: List[dict]) -> Image.Image:
-    """Draw simple boxes + labels using PIL (no cv2)."""
     img = pil_img.copy()
     draw = ImageDraw.Draw(img)
     try:
@@ -166,6 +182,7 @@ def health():
         "status": "ok" if MODEL and not MODEL_LOAD_ERROR else "error",
         "weights_in_use": WEIGHTS_IN_USE,
         "classes": CLASS_NAMES,
+        "upload_max_mb": UPLOAD_MAX_MB,
     }
     if MODEL_LOAD_ERROR:
         payload["detail"] = MODEL_LOAD_ERROR
@@ -179,8 +196,7 @@ def predict():
 
     Query params:
       - annotate=0|1 (default 1): whether to generate an annotated preview
-      - inline=0|1   (default 1): whether to inline Base64 (keeps old frontend working)
-        NOTE: Even when inline=0, we ALSO return annotated_image_url for convenience.
+      - inline=0|1   (default 1): include Base64 for backward compatibility
     """
     if MODEL_LOAD_ERROR or MODEL is None:
         return jsonify({"status": "error", "message": f"model not loaded: {MODEL_LOAD_ERROR}"}), 500
@@ -189,13 +205,12 @@ def predict():
     if not up or up.filename == "":
         return jsonify({"status": "error", "message": "No uploaded file (use field 'image' or 'file')"}), 400
 
-    # read flags (defaults chosen for backward-compat with your current HTML)
     try:
-        annotate_flag = int(request.args.get("annotate", "1"))  # 1 = on by default
+        annotate_flag = int(request.args.get("annotate", "1"))
     except Exception:
         annotate_flag = 1
     try:
-        inline_flag = int(request.args.get("inline", "1"))      # 1 = inline Base64 by default
+        inline_flag = int(request.args.get("inline", "1"))
     except Exception:
         inline_flag = 1
 
@@ -206,9 +221,8 @@ def predict():
 
     try:
         img = Image.open(up.stream).convert("RGB")
-        img.thumbnail((MAX_SIDE, MAX_SIDE))  # in-place resize to control RAM
+        img.thumbnail((MAX_SIDE, MAX_SIDE))
 
-        # -- Inference (no grad, CPU) --
         with torch.no_grad():
             out = MODEL.predict(
                 img, device=DEVICE, imgsz=MAX_SIDE, conf=0.15, max_det=MAX_DET, verbose=False
@@ -235,12 +249,10 @@ def predict():
                         "box": [float(x1), float(y1), float(x2), float(y2)],
                     })
 
-                # make an annotated preview only when requested
                 if annotate_flag == 1:
                     ann = _draw_annotations(img, dets)
                     ann.thumbnail((MAX_ANN, MAX_ANN))
 
-                    # Always produce a URL (small response + easy reuse)
                     out_dir = os.path.join(app.static_folder, "annotated")
                     os.makedirs(out_dir, exist_ok=True)
                     fname = f"{uuid4().hex}.png"
@@ -248,7 +260,6 @@ def predict():
                     ann.save(save_path, format="PNG", optimize=True)
                     annotated_url = f"/static/annotated/{fname}"
 
-                    # Also include Base64 if inline=1 (keeps old HTML working)
                     if inline_flag == 1:
                         annotated_b64 = _encode_png_base64(ann)
 
@@ -259,11 +270,9 @@ def predict():
             "image_size": {"w": int(img.width), "h": int(img.height)},
             "weights_in_use": WEIGHTS_IN_USE,
         }
-
         if annotate_flag == 1:
-            # Keep BOTH for compatibility and flexibility
-            payload["annotated_image_url"] = annotated_url  # can be None if no dets
-            payload["annotated_image"] = annotated_b64      # None unless inline=1 and dets>0
+            payload["annotated_image_url"] = annotated_url
+            payload["annotated_image"] = annotated_b64
 
         return jsonify(payload)
 
@@ -273,20 +282,14 @@ def predict():
         logging.exception("Predict error")
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
-        # Aggressive cleanup to stay under memory cap
-        try:
-            del img
-        except Exception:
-            pass
-        try:
-            del results
-        except Exception:
-            pass
+        try: del img
+        except Exception: pass
+        try: del results
+        except Exception: pass
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
-    # threaded=True lets Flask handle requests sequentially under low resources
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
